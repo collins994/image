@@ -1,0 +1,5 @@
+build
+make.bat
+main.c
+tags
+*.swp
