@@ -25,9 +25,11 @@ typedef struct {
 	char Descriptor;
 } TGAHEADER;
 
+// TODO(collins): make the ImageID part of the ImageData
 typedef struct {
 	TGAHEADER Header;
-	void *Data;
+	char *ImageID;
+	void *ImageData;
 } TGAIMAGE;
 #pragma pack(pop)
 
@@ -43,6 +45,7 @@ int image_tga_WriteFile(TGAIMAGE *image, const char *filename);
 #define FORMAT_RGB 3
 #define FORMAT_RGBA 4
 #define FORMAT_GRAYSCALE 1
+#define HEADER_SIZE 18
 
 int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 {
@@ -57,48 +60,49 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 
 	// make sure the image is atleast 18 bytes large
 	fseek(file, 0, SEEK_END);
-	if(ftell(file) < 18){
+	if(ftell(file) < HEADER_SIZE){
 		fprintf(stderr, "[FATAL]: (%s) The file header is too small\n", filename);
 		return -1;
 	}
 	fseek(file, 0, SEEK_SET);
-	// read the first 18 bytes into the header 
-	// assert(sizeof(image->Header) == fread(&(image->Header),sizeof(char),sizeof(image->Header),file));
-	if(18 < fread(&(image->Header), sizeof(char), 18, file)){
+	// TODO(collins): handle this error properly
+	if(HEADER_SIZE < fread(&(image->Header), sizeof(char), HEADER_SIZE, file)){
 		fprintf(stderr, "[FATAL]: The header of %s is less than 18 bytes\n", filename);
 		return -1;
 	}
 	
-	// check if the image has an ID section
+	// check if the image has an ID section,
+	// write the bytes into the Image->ImageID (not into the ImageData)
 	if(image->Header.IDLength > 0) {
-		printf("[INFO]: Image id length: %d\n", image->Header.IDLength);
+		image->ImageID = (char *)malloc(sizeof(char));
+		fread(image->ImageID, 1, (image->Header).IDLength, file);
+		printf("[INFO]: image id (%.*s)\n", (image->Header.IDLength), image->ImageID);
 	}
 
 	// check the resolution and the pixel depth
 	int bytesPerPixel = image->Header.BitsPerPixel >> 3;
-	// assert((image->Header.Height > 0 && image->Header.Width > 0) && (bytesPerPixel == FORMAT_GRAYSCALE || bytesPerPixel == FORMAT_RGB || bytesPerPixel == FORMAT_RGBA));
- if(!((image->Header.Height > 0 && image->Header.Width > 0) && (bytesPerPixel == FORMAT_GRAYSCALE || bytesPerPixel == FORMAT_RGB || bytesPerPixel == FORMAT_RGBA))){
- 		fprintf(stderr, "[FATAL]: the file format for %s is not recognized\n", filename);
+	if(!((image->Header.Height > 0 && image->Header.Width > 0) && (bytesPerPixel == FORMAT_GRAYSCALE || bytesPerPixel == FORMAT_RGB || bytesPerPixel == FORMAT_RGBA))){
+		fprintf(stderr, "[FATAL]: the file format for %s is not recognized\n", filename);
 		return -1;
- }
+	}
 
+	// make sure the header indicates that the file has actual data
+	DataSize = (image->Header.BitsPerPixel >> 3) * image->Header.Width * image->Header.Height;
 	if(image->Header.ImageType == 0) {
 			fprintf(stderr, "[WARNING]: The image contains no actual data.\n");
 			return (-1); 
 	}
-
-	// allocate memory for the data
-	DataSize = (image->Header.BitsPerPixel >> 3) * image->Header.Width * image->Header.Height;
-	image->Data = (char *)malloc(DataSize);
-	memset(image->Data, 0,DataSize); // initialize the memory to zero
-	
 	// make sure the file is large enough before reading the data
 	fseek(file, 0, SEEK_END);
-	if((ftell(file) - 18) < (DataSize)){
-		fprintf(stderr, "[FATAL]: (%s) The file data field is too small\n", filename);
+	if((ftell(file) - HEADER_SIZE) < (DataSize)){
+		fprintf(stderr, "[FATAL]: (%s) The data field is too small.\n", filename);
 		return -1;
 	}
 	fseek(file, 0, SEEK_SET);
+
+	// allocate memory for the data
+	image->ImageData = (char *)malloc(DataSize);
+	memset(image->ImageData, 0,DataSize); // initialize the memory to zero
 
 	// read the data
 	switch(image->Header.ImageType) {
@@ -115,8 +119,8 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 
 		case 2: // uncompressed true color image
 		{ 
-			// read the image data into image->Data field 
-			assert(DataSize == fread((image->Data), 1, DataSize, file));
+			// read the image data into image->ImageData field 
+			assert(DataSize == fread((image->ImageData), 1, DataSize, file));
 		} break;
 
 		case 3: // uncompressed GRAYSCALE image
@@ -155,10 +159,10 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 
 void ReleaseImage(TGAIMAGE *image) 
 {
-	free(image->Data);
+	free(image->ImageData);
 }
 
-int image_tga_WriteFile(TGAIMAGE *image, const char *filename)
+int image_tga_WriteFile(TGAIMAGE *Image, const char *filename)
 {
 	FILE *file;
 
@@ -168,11 +172,24 @@ int image_tga_WriteFile(TGAIMAGE *image, const char *filename)
 		return -1;
 	}
 
+	/**===== Writing the header ==== */
+	// check if the user gave an image id
+	if(Image->ImageID != NULL) { Image->Header.IDLength = strlen(Image->ImageID); }
 	// write the header
 	// TODO(collins): handle this error properly
-	if(fwrite(&(image->Header), 1, 18, file) < 18)
+	if(fwrite(&(Image->Header), 1, HEADER_SIZE, file) < HEADER_SIZE)
 	{
-		fprintf(stderr, "[FATAL]: could not dumb the tga file\n");
+		fprintf(stderr, "[FATAL]: could not write the tga file\n");
+		fprintf(stderr, "[DEBUG]: file: %s, line: %d\n", __FILE__, __LINE__);
+		return -1;
+	}
+
+
+	// write the image id before writing the image data
+	// if((fwrite((Image + HEADER_SIZE), 1, Image->Header.IDLength, file)) < Image->Header.IDLength){
+	if((fwrite((Image->ImageID), 1, Image->Header.IDLength, file)) < Image->Header.IDLength){
+		fprintf(stderr, "[FATAL]: could not write the tga file\n");
+		fprintf(stderr, "[DEBUG]: file: %s, line: %d\n", __FILE__, __LINE__);
 		return -1;
 	}
 
