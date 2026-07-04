@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #ifndef H_IMAGE_TGA
@@ -12,17 +13,17 @@ typedef struct {
 	char ImageType;
 
 	// color map specification
-	short ColorMapFirstIndex;
-	short ColorMapLength;
-	char 	ColorMapEntrySize;
+	uint16_t ColorMapFirstIndex; // short ColorMapFirstIndex;
+	uint16_t ColorMapLength;			// short ColorMapLength;
+	uint8_t ColorMapEntrySize;		// char 	ColorMapEntrySize;
 
 	// image specification
-	short XOrigin;
-	short YOrigin;
-	short Width;
-	short Height;
-	char BitsPerPixel;
-	char Descriptor;
+	uint16_t XOrigin; // 	short XOrigin;
+	uint16_t YOrigin; // 	short YOrigin;
+	uint16_t Width; 	// 	short Width;
+	uint16_t Height; // 	short Height;
+	uint8_t BitsPerPixel; // 	char BitsPerPixel;
+	uint8_t Descriptor; // 	char Descriptor;
 } TGAHEADER;
 
 // TODO(collins): make the ImageID part of the ImageData
@@ -36,9 +37,10 @@ typedef struct {
 // RETURN VALUES: 
 // -1 could not open the file 
 // -2 the image encoding is not supported (yet)
-void image_tga_InitializeImage(TGAIMAGE *Image);
 int image_tga_ReadFile(TGAIMAGE *image, const char *filename);
 int image_tga_WriteFile(TGAIMAGE *image, const char *filename);
+void image_tga_InitializeImage(TGAIMAGE *Image);
+int image_tga_SetImagePixel(TGAIMAGE *Image, unsigned long X, unsigned long Y, void *Color);
 #endif // H_IMAGE_TGA
 
 #ifdef IMAGE_TGA_IMPLEMENTATION
@@ -56,7 +58,8 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 	int bytesPerPixel;
 
 	// open the file in binary mode
-	if (fopen_s(&file, filename, "rb") != 0){
+	if (fopen_s(&file, filename, "rb") != 0)
+	{
 		fprintf(stderr, "[FATAL]: error opening the file at: %s\n", filename);
 		return -1;
 	}
@@ -68,17 +71,27 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 
 	// write the header
 	// -> make sure the file is large enough
-	if (fileSize < 18) {
+	if (fileSize < 18) 
+	{
 		fprintf(stderr, "[FATAL]: (%s) File too small\n", filename);
 		return -1;
 	}
-	if((fread(&(image->Header), 1, 18, file)) < 18){
+	if((fread(&(image->Header), 1, 18, file)) < 18)
+	{
 		fprintf(stderr, "[FATAL]: (%s) Can't dump the file\n", filename);
 		fprintf(stderr, "[DEBUG]: %s(%d)", __FILE__, __LINE__);
 		return -1;
 	}
 
-	// write the image data
+	// read the image id 
+	if ((image->Header.IDLength) > 0)
+	{
+		image->ImageID = (char *)malloc(image->Header.IDLength); // space for the image id 
+		memset(image->ImageID, 0, (image->Header.IDLength));
+	}
+	assert((image->Header.IDLength) == fread((image->ImageID), 1, (image->Header.IDLength), file));
+
+	// read the image data and image id
 	// -> make sure the image actually contains any data (as indicated by the ImageType in the Header)
 	if (image->Header.ImageType == 0) 
 	{
@@ -100,10 +113,12 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 		return -1;
 	}
 
-	// -> allocate space 
-	image->ImageData = (char *)malloc(DataSize);
-	memset(image->ImageData, 0,DataSize); // initialize the memory to zeros
 
+	image->ImageData = (char *)malloc(DataSize - image->Header.IDLength); // space for pixels 
+	memset(image->ImageData, 0, (DataSize - image->Header.IDLength));
+
+
+	// read the pixels
 	switch(image->Header.ImageType) {
 		case 1: // uncompressed  color-mapped image
 		{ 
@@ -114,7 +129,7 @@ int image_tga_ReadFile(TGAIMAGE *image, const char *filename)
 		case 2: // uncompressed true color image
 		{ 
 			// read the image data into image->ImageData field 
-			assert(DataSize == fread((image->ImageData), 1, DataSize, file));
+			assert((DataSize - image->Header.IDLength) == fread((image->ImageData), 1, (DataSize - image->Header.IDLength), file));
 		} break;
 
 		case 3: // uncompressed GRAYSCALE image
@@ -178,14 +193,17 @@ int image_tga_WriteFile(TGAIMAGE *Image, const char *filename)
 	 	return -1;
 	}
 
+	// write the image id
+	assert((Image->Header.IDLength) == fwrite((Image->ImageID), 1, (Image->Header.IDLength), file));
+
 	// write the image
 	// -> make sure that the data in Image is correct according to the image header
-	DataSize = (Image->Header.BitsPerPixel >> 3) * (Image->Header.Width * Image->Header.Height) + Image->Header.IDLength;  // (bytesPerPixel * numberofpixels) + numberofbytesforid
+	DataSize = (Image->Header.BitsPerPixel >> 3) * (Image->Header.Width * Image->Header.Height);  // (bytesPerPixel * numberofpixels)
 	if (fwrite((Image->ImageData), 1, DataSize, file) < DataSize)
 	{
-	 	fprintf(stderr, "[FATAL]: (%s) could not write file\n", filename);
-	 	fprintf(stderr, "[DEBUG]: file: %s, line: %d\n", __FILE__, __LINE__);
-	 	return -1;
+		fprintf(stderr, "[FATAL]: (%s) could not write file\n", filename);
+		fprintf(stderr, "[DEBUG]: file: %s, line: %d\n", __FILE__, __LINE__);
+		return -1;
 	}
 
 	fclose(file);
@@ -196,4 +214,14 @@ void image_tga_InitializeImage(TGAIMAGE *Image)
 {
 	Image->ImageID = NULL;
 }
-#endif//  IMAGE_TGA_IMPLEMENTATION
+
+int image_tga_SetImagePixel(TGAIMAGE *Image, unsigned long X, unsigned long Y, const void *Color)
+{
+	const int bytesPerPixel = (Image->Header.BitsPerPixel >> 3);
+	if (X < 0 || X > Image->Header.Width || Y < 0 || Y > Image->Header.Height) return -1; 
+
+	void *Pixel = ((char *)Image->ImageData + (Y * bytesPerPixel * Image->Header.Width)) + (X * bytesPerPixel);
+	memcpy(Pixel, Color, bytesPerPixel);
+	return 0;
+}
+#endif	//IMAGE_TGA_IMPLEMENTATION
